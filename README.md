@@ -1,6 +1,6 @@
-# 🎯 Resume Analyzer AI — LangGraph + Streamlit
+# Resume Amplifier AI — LangGraph + Streamlit
 
-An AI-powered resume analysis agent built with **LangGraph** and **Claude**, with a polished **Streamlit** frontend.
+An AI-powered resume analysis agent built with **LangGraph** and **Gemini**, with a polished **Streamlit** frontend.
 
 ## Features
 
@@ -11,6 +11,14 @@ An AI-powered resume analysis agent built with **LangGraph** and **Claude**, wit
 | 💬 **Q&A** | Chat-style Q&A — ask anything about the JD or your resume |
 | ✨ **Improved Resume** | AI-rewrites your resume for the specific JD (no fabrication) |
 
+
+## Overview
+
+![alt text](image.png)
+![alt text](image-1.png)
+![alt text](image-2.png)
+![alt text](image-3.png)
+![alt text](image-4.png)
 ## Architecture
 
 ```
@@ -50,14 +58,14 @@ streamlit run app.py
 
 ### 4. Use
 - Open `http://localhost:8501` in your browser
-- Enter your **Anthropic API key** in the sidebar
+- Enter your **Google API key** in the sidebar
 - Paste or upload your **Job Description** and **Resume** (`.txt`, `.pdf`, or `.docx`)
 - Explore each tab!
 
 ## Environment variable (optional)
 Instead of entering the key in the UI, you can set it beforehand:
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
+export GOOGLE_API_KEY=Az...
 streamlit run app.py
 ```
 
