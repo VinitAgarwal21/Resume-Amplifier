@@ -1,0 +1,36 @@
+version: "3.9"
+
+services:
+  api:
+    build: .
+    container_name: resume_amplifier_api
+    ports:
+      - "8000:8000"
+    environment:
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}   # optional: set in .env file
+    volumes:
+      - ./agent.py:/app/agent.py           # hot-reload source during dev
+      - ./main.py:/app/main.py
+      - ./export_utils.py:/app/export_utils.py
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Optional: run Streamlit alongside the API
+  streamlit:
+    build: .
+    container_name: resume_amplifier_ui
+    ports:
+      - "8501:8501"
+    environment:
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+    volumes:
+      - .:/app
+    command: ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+    depends_on:
+      - api
+    profiles:
+      - ui   # only starts with: docker-compose --profile ui up
