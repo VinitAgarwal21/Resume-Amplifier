@@ -1,10 +1,12 @@
 """
 Resume Analyzer Agent built with LangGraph.
 Nodes:
-  1. fit_score       – ATS-style match score
-  2. strengths_weaknesses – pros/cons vs JD
-  3. qa_node         – answer questions about JD or resume
-  4. resume_rewriter – generate improved resume
+  1. fit_score             – ATS-style match score
+  2. strengths_weaknesses  – pros/cons vs JD
+  3. qa_node               – answer questions about JD or resume
+  4. resume_rewriter       – generate improved resume
+  5. interview_prep        – generate interview Q&A
+  6. cover_letter          – generate tailored cover letter
 """
 
 import os
@@ -20,28 +22,28 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 class AgentState(TypedDict):
     jd_text: str
     resume_text: str
-    task: Literal["score", "strengths", "qa", "rewrite"]
+    task: Literal["score", "strengths", "qa", "rewrite", "interview", "cover_letter"]
     question: str
     fit_score: dict
     strengths_weaknesses: dict
     qa_answer: str
     improved_resume: str
+    interview_prep: dict       # {"questions": [{"question":..,"answer":..,"category":..}]}
+    cover_letter: str
     error: str
 
 
 # ── LLM ──────────────────────────────────────────────────────────────────────
 
 def get_json_llm():
-    """LLM that forces pure JSON output — no fences, no prose."""
     return ChatGoogleGenerativeAI(
         model="gemini-3.1-flash-lite",
         google_api_key=os.environ.get("GOOGLE_API_KEY", ""),
-        response_mime_type="application/json",   # ← forces raw JSON output
-        convert_system_message_to_human=True,    # ← enables SystemMessage
+        response_mime_type="application/json",
+        convert_system_message_to_human=True,
     )
 
 def get_text_llm():
-    """LLM for free-text responses (Q&A, rewrite)."""
     return ChatGoogleGenerativeAI(
         model="gemini-3.1-flash-lite",
         google_api_key=os.environ.get("GOOGLE_API_KEY", ""),
@@ -49,7 +51,7 @@ def get_text_llm():
     )
 
 
-# ── Node helpers ──────────────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _call(system: str, user: str, json_mode: bool = False) -> str:
     llm = get_json_llm() if json_mode else get_text_llm()
@@ -58,33 +60,22 @@ def _call(system: str, user: str, json_mode: bool = False) -> str:
     content = response.content
     if isinstance(content, list):
         content = " ".join(
-            block.get("text", "") if isinstance(block, dict) else str(block)
-            for block in content
+            block.get("text", "") if isinstance(block, dict) else str(block) for block in content
         )
     return content.strip()
 
 
 def _parse_json(text: str) -> dict:
-    """
-    Robustly extract JSON object from model output.
-    With json_mode=True this should always be clean JSON,
-    but we keep fallbacks just in case.
-    """
-    # 1. Try direct parse first (clean JSON from json_mode)
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
-
-    # 2. Strip markdown fences (greedy to capture nested braces)
     fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.DOTALL)
     if fenced:
         try:
             return json.loads(fenced.group(1))
         except json.JSONDecodeError:
             pass
-
-    # 3. Find outermost { } by counting braces
     start = text.find("{")
     if start != -1:
         depth = 0
@@ -98,7 +89,6 @@ def _parse_json(text: str) -> dict:
                         return json.loads(text[start:i+1])
                     except json.JSONDecodeError:
                         break
-
     return {}
 
 
@@ -118,14 +108,12 @@ Return a JSON object with exactly these keys:
     user = f"JOB DESCRIPTION:\n{state['jd_text']}\n\nRESUME:\n{state['resume_text']}"
     raw = _call(system, user, json_mode=True)
     parsed = _parse_json(raw)
-
     if not parsed:
         parsed = {
             "score": 0, "label": "Error",
             "summary": f"Parse failed. Raw output: {raw[:300]}",
             "breakdown": {}, "matched_keywords": [], "missing_keywords": []
         }
-
     return {**state, "fit_score": parsed}
 
 
@@ -141,10 +129,8 @@ Provide 4-6 items in each of strengths and weaknesses."""
     user = f"JOB DESCRIPTION:\n{state['jd_text']}\n\nRESUME:\n{state['resume_text']}"
     raw = _call(system, user, json_mode=True)
     parsed = _parse_json(raw)
-
     if not parsed:
         parsed = {"strengths": [], "weaknesses": [], "critical_gaps": [], "quick_wins": []}
-
     return {**state, "strengths_weaknesses": parsed}
 
 
@@ -159,7 +145,6 @@ Format your answer in clear paragraphs. Use bullet points only when listing mult
         f"RESUME:\n{state['resume_text']}\n\n"
         f"QUESTION: {state['question']}"
     )
-
     answer = _call(system, user, json_mode=False)
     return {**state, "qa_answer": answer}
 
@@ -179,6 +164,51 @@ Output ONLY the improved resume as plain text — no commentary, no explanation.
     return {**state, "improved_resume": improved}
 
 
+def interview_prep_node(state: AgentState) -> AgentState:
+    system = """You are an expert interview coach and hiring manager.
+Based on the job description and candidate's resume, generate realistic interview questions
+the candidate is likely to face, along with strong suggested answers tailored to their background.
+
+Return a JSON object with exactly this structure:
+{
+  "questions": [
+    {
+      "category": "<Behavioral|Technical|Situational|Role-Specific|Culture Fit>",
+      "question": "...",
+      "why_asked": "one sentence on why interviewers ask this",
+      "suggested_answer": "a strong 3-5 sentence answer drawing from the resume"
+    }
+  ]
+}
+Generate 10-12 questions spread across categories."""
+
+    user = f"JOB DESCRIPTION:\n{state['jd_text']}\n\nRESUME:\n{state['resume_text']}"
+    raw = _call(system, user, json_mode=True)
+    parsed = _parse_json(raw)
+    if not parsed:
+        parsed = {"questions": []}
+    return {**state, "interview_prep": parsed}
+
+
+def cover_letter_node(state: AgentState) -> AgentState:
+    system = """You are an expert career coach and professional writer.
+Write a compelling, tailored cover letter for the candidate applying to the role in the job description.
+
+Rules:
+- Match the tone and language of the job description
+- Open with a strong hook — not "I am applying for..."
+- Highlight 2-3 specific achievements from the resume most relevant to the JD
+- Show genuine enthusiasm for the company/role without being generic
+- Close with a confident call to action
+- Keep it to 3-4 paragraphs, under 400 words
+- Do NOT fabricate any information not present in the resume
+- Output ONLY the cover letter text — no subject line, no commentary"""
+
+    user = f"JOB DESCRIPTION:\n{state['jd_text']}\n\nRESUME:\n{state['resume_text']}"
+    letter = _call(system, user, json_mode=False)
+    return {**state, "cover_letter": letter}
+
+
 # ── Router ────────────────────────────────────────────────────────────────────
 
 def route_task(state: AgentState) -> str:
@@ -194,6 +224,8 @@ def build_graph() -> StateGraph:
     graph.add_node("strengths_weaknesses", strengths_weaknesses_node)
     graph.add_node("qa", qa_node)
     graph.add_node("resume_rewriter", resume_rewriter_node)
+    graph.add_node("interview_prep", interview_prep_node)
+    graph.add_node("cover_letter", cover_letter_node)
 
     graph.add_conditional_edges(
         "__start__",
@@ -203,13 +235,14 @@ def build_graph() -> StateGraph:
             "strengths": "strengths_weaknesses",
             "qa": "qa",
             "rewrite": "resume_rewriter",
+            "interview": "interview_prep",
+            "cover_letter": "cover_letter",
         },
     )
 
-    graph.add_edge("fit_score", END)
-    graph.add_edge("strengths_weaknesses", END)
-    graph.add_edge("qa", END)
-    graph.add_edge("resume_rewriter", END)
+    for node in ["fit_score", "strengths_weaknesses", "qa",
+                 "resume_rewriter", "interview_prep", "cover_letter"]:
+        graph.add_edge(node, END)
 
     return graph.compile()
 
@@ -219,37 +252,29 @@ GRAPH = build_graph()
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def run_fit_score(jd: str, resume: str) -> dict:
-    state = AgentState(
-        jd_text=jd, resume_text=resume, task="score",
-        question="", fit_score={}, strengths_weaknesses={},
-        qa_answer="", improved_resume="", error=""
+def _base_state(jd, resume, task, **kwargs):
+    return AgentState(
+        jd_text=jd, resume_text=resume, task=task,
+        question=kwargs.get("question", ""),
+        fit_score={}, strengths_weaknesses={},
+        qa_answer="", improved_resume="",
+        interview_prep={}, cover_letter="", error=""
     )
-    return GRAPH.invoke(state)["fit_score"]
 
+def run_fit_score(jd: str, resume: str) -> dict:
+    return GRAPH.invoke(_base_state(jd, resume, "score"))["fit_score"]
 
 def run_strengths_weaknesses(jd: str, resume: str) -> dict:
-    state = AgentState(
-        jd_text=jd, resume_text=resume, task="strengths",
-        question="", fit_score={}, strengths_weaknesses={},
-        qa_answer="", improved_resume="", error=""
-    )
-    return GRAPH.invoke(state)["strengths_weaknesses"]
-
+    return GRAPH.invoke(_base_state(jd, resume, "strengths"))["strengths_weaknesses"]
 
 def run_qa(jd: str, resume: str, question: str) -> str:
-    state = AgentState(
-        jd_text=jd, resume_text=resume, task="qa",
-        question=question, fit_score={}, strengths_weaknesses={},
-        qa_answer="", improved_resume="", error=""
-    )
-    return GRAPH.invoke(state)["qa_answer"]
-
+    return GRAPH.invoke(_base_state(jd, resume, "qa", question=question))["qa_answer"]
 
 def run_rewrite(jd: str, resume: str) -> str:
-    state = AgentState(
-        jd_text=jd, resume_text=resume, task="rewrite",
-        question="", fit_score={}, strengths_weaknesses={},
-        qa_answer="", improved_resume="", error=""
-    )
-    return GRAPH.invoke(state)["improved_resume"]
+    return GRAPH.invoke(_base_state(jd, resume, "rewrite"))["improved_resume"]
+
+def run_interview_prep(jd: str, resume: str) -> dict:
+    return GRAPH.invoke(_base_state(jd, resume, "interview"))["interview_prep"]
+
+def run_cover_letter(jd: str, resume: str) -> str:
+    return GRAPH.invoke(_base_state(jd, resume, "cover_letter"))["cover_letter"]
